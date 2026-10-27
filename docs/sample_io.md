@@ -1,5 +1,6 @@
 # Sample API I/O
 
+<<<<<<< HEAD
 Start the app using the instructions in [README.md](../README.md). Sign in first:
 
 ```http
@@ -17,6 +18,17 @@ Content-Type: application/json
 ```
 
 For admin examples, sign in with `admin@campus.edu` and use its returned token. Examples below are representative; IDs and timestamps vary by database state.
+=======
+Start the app using the instructions in [README.md](../README.md). Requests that create reports or claims should include:
+
+```http
+X-User-Email: maya@campus.edu
+X-User-Role: student
+Content-Type: application/json
+```
+
+Admin requests use `X-User-Role: admin`. Examples below are representative; IDs and timestamps vary by database state.
+>>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
 
 ## 1. Lost item submission
 
@@ -226,7 +238,11 @@ Response `201 Created`:
 }
 ```
 
+<<<<<<< HEAD
 Admin request `PATCH /claims/1` with `Authorization: Bearer <admin-token>`:
+=======
+Admin request `PATCH /claims/1` with `X-User-Role: admin`:
+>>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
 
 ```json
 {
@@ -245,11 +261,18 @@ Response:
   "status": "approved",
   "admin_notes": "Proof reviewed; ownership confirmed.",
   "created_at": "2026-10-27T09:40:00+00:00",
+<<<<<<< HEAD
   "collect_location": "Science Hall",
+=======
+>>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
   "claimant_email": "maya@campus.edu",
   "reporter_contact_email": "sam@campus.edu",
   "proof_description": "There is a small crescent-shaped scratch beneath the mountain sticker."
 }
 ```
 
+<<<<<<< HEAD
 The claimant's `GET /claims` response includes status, admin notes, and `collect_location`, but does not include finder email or proof. The UI displays the approved collection instruction and provides **Confirm collected**. This sends `PATCH /claims/1/collect` with the claimant's bearer token and changes the item's status from `claimed` to `returned`. An admin can still use `PATCH /items/2/return` if needed.
+=======
+After approval, `PATCH /items/2/return` as admin changes the item's status from `claimed` to `returned`.
+>>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d

@@ -7,6 +7,9 @@ frontend/dist/
 .pytest_cache/
 **/.pytest_cache/
 *.pyc
+<<<<<<< HEAD
 *.db
 .venv/
 node_modules/
+=======
+>>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d

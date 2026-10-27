@@ -4,14 +4,22 @@
 
 ```mermaid
 flowchart LR
+<<<<<<< HEAD
   Browser[React + Vite + Tailwind UI] -->|HTTP JSON + bearer token| API[FastAPI]
+=======
+  Browser[React + Vite + Tailwind UI] -->|HTTP JSON + demo role headers| API[FastAPI]
+>>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
   API --> Validate[Pydantic validation]
   API --> Match[Rule-based matching engine]
   API --> DB[(SQLite)]
   Match --> DB
+<<<<<<< HEAD
   API --> Auth[PBKDF2 passwords + SQLite sessions]
   Auth --> DB
   Admin[Admin account] --> Browser
+=======
+  Admin[Admin demo role] --> Browser
+>>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
 ```
 
 ## Stack and rationale
@@ -23,15 +31,24 @@ flowchart LR
 
 ## Data model
 
+<<<<<<< HEAD
 SQLite tables implement the core workflow:
+=======
+Three SQLite tables implement the core workflow:
+>>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
 
 - `items`: lost/found type, descriptive attributes, event date/location, private contact email, status, creator, and creation time.
 - `matches`: reserved for persisted pair results; matching is computed on demand so newly added reports can immediately match earlier reports.
 - `claims`: found item, claimant email, private proof, pending/approved/rejected status, admin notes, and creation time.
+<<<<<<< HEAD
 - `users`: account name, unique email, salted PBKDF2 password hash, role, and creation time.
 - `sessions`: bearer token, owning user, and seven-day expiration.
 
 Each request that needs an identity uses an `Authorization: Bearer <token>` header. Registration always creates a student; admin privileges come only from the seeded admin account. Sessions expire after seven days and can be revoked by logging out.
+=======
+
+The prototype uses the claimant email as the demo identity. Role selection is passed in request headers; this is intentionally a demo-only substitute for campus authentication.
+>>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
 
 ## Matching algorithm
 
@@ -51,6 +68,7 @@ This heuristic is explainable but not semantic: category labels must agree, text
 
 ## Claims and privacy
 
+<<<<<<< HEAD
 Public item endpoints omit contact email and creator identity. Contact details are available only from the admin-only `GET /admin/items/{id}` endpoint and in the admin view of claims. `POST /claims` accepts a proof description but only the admin view of `GET /claims` includes proof and claimant email. A claimant can see their own claim's status, admin notes, and collection location, not the proof field or finder email. Claiming is blocked for the finder and duplicate pending claims. Approving a claim changes the item from `open` to `claimed` and rejects any other pending claims for that item. The claimant can confirm collection to change it to `returned`; rejected claims leave the item open. Owners can mark their own open lost reports recovered or delete their own open reports.
 
 The local demo uses seeded credentials documented in the README. A production deployment should still consider campus SSO, CSRF protections where applicable, rate limiting, secure secret management, and careful handling/retention of contact and claim data.
@@ -60,3 +78,14 @@ The Render Blueprint sets `PUBLIC_DEMO_READ_ONLY=true`. In this mode, the API re
 ## Trade-offs and next steps
 
 Under the hackathon time limit, image upload, image similarity, outbound email notifications, and map view are omitted. The priority is a demonstrable local workflow and transparent matching. The next steps would be campus SSO, stronger claim/audit workflows, image storage and visual similarity, geocoded campus locations, and deployment monitoring/backups.
+=======
+Public item endpoints omit contact email and creator identity. Contact details are available only from the admin-only `GET /admin/items/{id}` endpoint and in the admin view of claims. `POST /claims` accepts a proof description but only the admin view of `GET /claims` includes proof and claimant email. A claimant can see their own claim's status and admin notes, not the proof field or report contact. An admin approval changes the item from `open` to `claimed`; a separate admin return action changes it to `returned`. Rejected claims leave the item open.
+
+There are no passwords or real identity checks; the browser's role selector sets demo headers. A deployed app must replace this with campus SSO, server-verified roles, CSRF protections, rate limiting, and secure handling/retention of contact and claim data.
+
+The Render Blueprint sets `PUBLIC_DEMO_READ_ONLY=true`. In this mode, the API rejects all report/claim writes, blocks claim records and admin endpoints, and the frontend hides report, claim, and admin controls. Public read-only access therefore does not depend on the UI to enforce the boundary.
+
+## Trade-offs and next steps
+
+Under the hackathon time limit, image upload, image similarity, email notifications, real authentication, and map view are omitted. The priority is a demonstrable local workflow and transparent matching. The next steps would be campus SSO, stronger claim/audit workflows, image storage and visual similarity, email/in-app notifications, geocoded campus locations, and deployment monitoring/backups.
+>>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
