@@ -1,16 +1,10 @@
 import os
-<<<<<<< HEAD
 import hashlib
 import hmac
 import secrets
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-=======
-import sqlite3
-from contextlib import contextmanager
-from datetime import datetime, timezone
->>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
 from pathlib import Path
 from typing import Literal
 
@@ -19,11 +13,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
-<<<<<<< HEAD
 from config import CAMPUS_SAFETY_CONTACT, DATABASE_PATH, TOP_MATCHES
-=======
-from config import DATABASE_PATH, TOP_MATCHES
->>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
 from matching import score_pair
 
 app = FastAPI(title="Lost & Found Campus Portal", version="1.0.0")
@@ -70,7 +60,6 @@ def initialize_db():
                 claimant_email TEXT NOT NULL, proof_description TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
                 admin_notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
             );
-<<<<<<< HEAD
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
                 email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
@@ -81,13 +70,10 @@ def initialize_db():
                 expires_at TEXT NOT NULL,
                 FOREIGN KEY(user_id) REFERENCES users(id)
             );
-=======
->>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
             """
         )
 
 
-<<<<<<< HEAD
 def hash_password(password: str, salt: bytes | None = None) -> str:
     salt = salt or secrets.token_bytes(16)
     password_hash = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 310_000)
@@ -126,13 +112,6 @@ def current_user(authorization: str | None = Header(default=None)):
     if not user:
         raise HTTPException(status_code=401, detail="Session expired. Please sign in again.")
     return dict(user)
-=======
-def current_user(x_user_email: str | None = Header(default=None), x_user_role: str = Header(default="student")):
-    email = (x_user_email or "").strip().lower()
-    if not email:
-        raise HTTPException(status_code=401, detail="Choose a demo user before continuing")
-    return {"email": email, "role": x_user_role.lower()}
->>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
 
 
 def require_admin(user=Depends(current_user)):
@@ -163,7 +142,6 @@ class ItemCreate(BaseModel):
     image_path: str | None = None
 
 
-<<<<<<< HEAD
 class AuthRegister(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     email: EmailStr
@@ -175,8 +153,6 @@ class AuthLogin(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
 
-=======
->>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
 class ClaimCreate(BaseModel):
     item_id: int
     proof_description: str = Field(min_length=8, max_length=2000)
@@ -215,7 +191,6 @@ def health():
 
 @app.get("/config")
 def public_config():
-<<<<<<< HEAD
     return {"read_only": public_read_only(), "campus_safety_contact": CAMPUS_SAFETY_CONTACT}
 
 
@@ -262,9 +237,6 @@ def logout(user=Depends(current_user), authorization: str = Header()):
 @app.get("/auth/me")
 def auth_me(user=Depends(current_user)):
     return user
-=======
-    return {"read_only": public_read_only()}
->>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
 
 
 @app.post("/items", status_code=201)
@@ -280,11 +252,7 @@ def create_item(payload: ItemCreate, user=Depends(current_user), _=Depends(ensur
             """INSERT INTO items
             (type,title,description,category,color,brand,location,date_event,contact_email,image_path,created_by,created_at)
             VALUES (:type,:title,:description,:category,:color,:brand,:location,:date_event,:contact_email,:image_path,:created_by,:created_at)""",
-<<<<<<< HEAD
             {**fields, "contact_email": user["email"], "created_by": user["email"], "created_at": created_at},
-=======
-            {**fields, "contact_email": str(fields["contact_email"]), "created_by": user["email"], "created_at": created_at},
->>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
         )
         item_id = cursor.lastrowid
     return {"item": get_item_row(item_id), "matches": _all_matches_for(item_id)}
@@ -298,15 +266,12 @@ def get_item_row(item_id):
     return public_item(row)
 
 
-<<<<<<< HEAD
 def optional_current_user(authorization: str | None = Header(default=None)):
     if not authorization:
         return None
     return current_user(authorization)
 
 
-=======
->>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
 @app.get("/items")
 def list_items(
     type: Literal["lost", "found"] | None = None,
@@ -343,7 +308,6 @@ def list_items(
 
 
 @app.get("/items/{item_id}")
-<<<<<<< HEAD
 def get_item(item_id: int, user=Depends(optional_current_user)):
     with db() as connection:
         row = connection.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
@@ -352,10 +316,6 @@ def get_item(item_id: int, user=Depends(optional_current_user)):
     item = public_item(row)
     item["is_owner"] = bool(user and row["created_by"] == user["email"])
     return item
-=======
-def get_item(item_id: int):
-    return get_item_row(item_id)
->>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
 
 
 @app.get("/admin/items/{item_id}")
@@ -381,7 +341,6 @@ def my_items(user=Depends(current_user)):
     return [public_item(row) for row in rows]
 
 
-<<<<<<< HEAD
 @app.delete("/items/{item_id}", status_code=204)
 def delete_item(item_id: int, user=Depends(current_user), _=Depends(ensure_writes_enabled)):
     with db() as connection:
@@ -429,8 +388,6 @@ def delete_my_item(item_id: int, user=Depends(current_user), _=Depends(ensure_wr
         connection.execute("DELETE FROM items WHERE id = ?", (item_id,))
 
 
-=======
->>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
 @app.post("/claims", status_code=201)
 def create_claim(payload: ClaimCreate, user=Depends(current_user), _=Depends(ensure_writes_enabled)):
     with db() as connection:
@@ -439,7 +396,6 @@ def create_claim(payload: ClaimCreate, user=Depends(current_user), _=Depends(ens
             raise HTTPException(status_code=404, detail="Found item not found")
         if item["status"] != "open":
             raise HTTPException(status_code=409, detail="This item is no longer available to claim")
-<<<<<<< HEAD
         if item["created_by"] == user["email"]:
             raise HTTPException(status_code=409, detail="You cannot claim your own found item")
         pending_claim = connection.execute(
@@ -448,8 +404,6 @@ def create_claim(payload: ClaimCreate, user=Depends(current_user), _=Depends(ens
         ).fetchone()
         if pending_claim:
             raise HTTPException(status_code=409, detail="You already have a pending claim for this item")
-=======
->>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
         cursor = connection.execute(
             "INSERT INTO claims(item_id, claimant_email, proof_description, created_at) VALUES (?,?,?,?)",
             (payload.item_id, user["email"], payload.proof_description,
@@ -462,10 +416,7 @@ def claim_record(row, admin: bool):
     result = {
         "id": row["id"], "item_id": row["item_id"], "item_title": row["item_title"],
         "status": row["status"], "admin_notes": row["admin_notes"], "created_at": row["created_at"],
-<<<<<<< HEAD
         "collect_location": row["collect_location"],
-=======
->>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
     }
     if admin:
         result.update(
@@ -479,12 +430,8 @@ def claim_record(row, admin: bool):
 @app.get("/claims")
 def list_claims(user=Depends(current_user), _=Depends(ensure_writes_enabled)):
     with db() as connection:
-<<<<<<< HEAD
         query = """SELECT c.*, i.title AS item_title, i.location AS collect_location,
                           i.contact_email AS reporter_contact_email FROM claims c
-=======
-        query = """SELECT c.*, i.title AS item_title, i.contact_email AS reporter_contact_email FROM claims c
->>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
                    JOIN items i ON i.id = c.item_id"""
         values = ()
         if user["role"] != "admin":
@@ -508,31 +455,23 @@ def decide_claim(claim_id: int, decision: ClaimDecision, user=Depends(require_ad
             if item["status"] != "open":
                 raise HTTPException(status_code=409, detail="Item is no longer open")
             connection.execute("UPDATE items SET status = 'claimed' WHERE id = ?", (claim["item_id"],))
-<<<<<<< HEAD
             connection.execute(
                 "UPDATE claims SET status = 'rejected' WHERE item_id = ? AND id != ? AND status = 'pending'",
                 (claim["item_id"], claim_id),
             )
-=======
->>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
         connection.execute(
             "UPDATE claims SET status = ?, admin_notes = ? WHERE id = ?",
             (decision.status, decision.admin_notes, claim_id),
         )
         row = connection.execute(
-<<<<<<< HEAD
             """SELECT c.*, i.title AS item_title, i.location AS collect_location,
                       i.contact_email AS reporter_contact_email
-=======
-            """SELECT c.*, i.title AS item_title, i.contact_email AS reporter_contact_email
->>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
                FROM claims c JOIN items i ON i.id = c.item_id WHERE c.id = ?""",
             (claim_id,),
         ).fetchone()
     return claim_record(row, True)
 
 
-<<<<<<< HEAD
 @app.patch("/claims/{claim_id}/collect")
 def confirm_collected(claim_id: int, user=Depends(current_user), _=Depends(ensure_writes_enabled)):
     with db() as connection:
@@ -586,8 +525,6 @@ def my_events(user=Depends(current_user), _=Depends(ensure_writes_enabled)):
     return events[:10]
 
 
-=======
->>>>>>> 8211c2f3d11a4ca8a3cf071dc5d4a4adc1e5020d
 @app.patch("/items/{item_id}/return")
 def return_item(item_id: int, user=Depends(require_admin)):
     with db() as connection:
