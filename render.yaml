@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: campusloop-demo
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: PUBLIC_DEMO_READ_ONLY
+        value: "true"
