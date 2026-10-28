@@ -1,4 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import confetti from "canvas-confetti";
+import Joyride, { STATUS } from "react-joyride";
 import { Activity, ArrowLeft, ArrowRight, Bell, BookOpen, Check, ChevronDown, CircleHelp, Compass, Filter, Image as ImageIcon, LayoutDashboard, MapPin, Moon, Plus, Search, ShieldCheck, Sparkles, Sun, Trophy, Trash2, Upload, Users } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
@@ -6,6 +9,33 @@ const API = "";
 const categories = ["Electronics", "ID card", "ID cards", "Keys", "Bags", "Books", "Clothing", "Water bottle", "Other"];
 const initialForm = { type: "lost", title: "", description: "", category: "Electronics", color: "", brand: "", location: "", date_event: new Date().toISOString().slice(0, 10), contact_email: "" };
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const TOUR_STEPS = [
+  { target: "#tour-report", content: "Start here to report something you have lost or found.", disableBeacon: true },
+  { target: "#tour-search", content: "Search the campus reports by item, color, or location." },
+  { target: "#tour-matches", content: "Smart matching compares reports and suggests likely matches." },
+  { target: "#tour-profile", content: "Your account, activity, and sign-in options are here." },
+];
+
+function relativeTime(value) {
+  const timestamp = Date.parse(value || "");
+  if (!Number.isFinite(timestamp)) return "recently";
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} hr ago`;
+  return `${Math.floor(seconds / 86400)} day(s) ago`;
+}
+
+function anonymousReportText(item) {
+  const title = (item.title || "an item").trim().toLowerCase();
+  const article = /^(a|an|the)\s/.test(title)
+    ? ""
+    : /\b(keys|earbuds|glasses|pants)\b/.test(title)
+      ? ""
+      : /^[aeiou]/.test(title) ? "an " : "a ";
+  const verb = item.type === "found" ? "found" : "lost";
+  return `A student ${verb} ${article}${title} near ${item.location || "campus"}`;
+}
 
 async function compressImage(file, blurred = false) {
   const bitmap = await createImageBitmap(file);
@@ -24,10 +54,12 @@ async function compressImage(file, blurred = false) {
 }
 
 export default function App() {
+  const prefersReducedMotion = useReducedMotion();
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(() => localStorage.getItem("campusloop_token"));
   const [page, setPage] = useState("browse");
   const [items, setItems] = useState([]);
+  const [recentReports, setRecentReports] = useState([]);
   const [itemsLoading, setItemsLoading] = useState(true);
   const [claims, setClaims] = useState([]);
   const [myItems, setMyItems] = useState([]);
@@ -41,6 +73,9 @@ export default function App() {
   const [detailReturnPage, setDetailReturnPage] = useState("browse");
   const [matches, setMatches] = useState([]);
   const [matchesLoading, setMatchesLoading] = useState(false);
+  const [matchPopup, setMatchPopup] = useState(null);
+  const [matchPopupQueue, setMatchPopupQueue] = useState([]);
+  const [tourRun, setTourRun] = useState(false);
   const [filters, setFilters] = useState({ q: "", type: "", category: "", location: "", status: "open", date_from: "", date_to: "" });
   const [form, setForm] = useState(initialForm);
   const [notice, setNotice] = useState("");
@@ -53,6 +88,7 @@ export default function App() {
   const [events, setEvents] = useState([]);
   const [loginDestination, setLoginDestination] = useState("browse");
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem("campfindr_theme") === "dark");
+  const shownMatchPopups = useRef(new Set());
 
   useEffect(() => {
     document.documentElement.dataset.theme = darkMode ? "dark" : "light";
@@ -226,6 +262,23 @@ export default function App() {
   }
   useEffect(() => { loadItems(); }, [filters, user?.email, readOnly]);
   useEffect(() => {
+    let active = true;
+    const refreshRecentReports = async () => {
+      try {
+        const reports = await request("/items");
+        if (active) setRecentReports(reports.slice(0, 8));
+      } catch (error) {
+        if (active) setNotice(error.message);
+      }
+    };
+    refreshRecentReports();
+    const interval = window.setInterval(refreshRecentReports, 60_000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, []);
+  useEffect(() => {
     if (!user || readOnly) return;
     if (page === "admin" || page === "my") loadClaims();
     if (page === "my") loadMyItems();
@@ -235,6 +288,59 @@ export default function App() {
     if (page === "admin" && user.role === "admin") loadAdminData();
   }, [page, user?.email, readOnly]);
   useEffect(() => { loadLeaderboard(); }, []);
+  useEffect(() => {
+    if (itemsLoading || page !== "browse" || selected || tourRun) return;
+    if (localStorage.getItem("campfindr_tour_seen")) return;
+    localStorage.setItem("campfindr_tour_seen", "true");
+    setTourRun(true);
+  }, [itemsLoading, page, selected, tourRun]);
+  useEffect(() => {
+    if (!selected || !matches.length) return;
+    try {
+      const seen = new Set(JSON.parse(localStorage.getItem("campfindr_seen_matches") || "[]"));
+      const freshMatches = matches
+        .filter((match) => match.score > 85)
+        .filter((match) => {
+          const key = [selected.id, match.item.id].sort((a, b) => a - b).join(":");
+          return !seen.has(key);
+        })
+        .map((match) => ({ ...match, sourceId: selected.id }));
+      setMatchPopupQueue(freshMatches);
+    } catch (error) {
+      setNotice(`Could not load match popup history: ${error.message}`);
+    }
+  }, [selected?.id, matches]);
+  useEffect(() => {
+    if (matchPopup || !matchPopupQueue.length) return;
+    const [nextMatch, ...remaining] = matchPopupQueue;
+    const key = [nextMatch.sourceId, nextMatch.item.id].sort((a, b) => a - b).join(":");
+    if (shownMatchPopups.current.has(key)) {
+      setMatchPopupQueue(remaining);
+      return;
+    }
+    shownMatchPopups.current.add(key);
+    try {
+      const seen = new Set(JSON.parse(localStorage.getItem("campfindr_seen_matches") || "[]"));
+      seen.add(key);
+      localStorage.setItem("campfindr_seen_matches", JSON.stringify([...seen]));
+    } catch (error) {
+      setNotice(`Could not save match popup history: ${error.message}`);
+    }
+    setMatchPopupQueue(remaining);
+    setMatchPopup(nextMatch);
+    if (!prefersReducedMotion) {
+      confetti({ particleCount: 85, spread: 72, origin: { y: 0.65 }, disableForReducedMotion: true });
+    }
+  }, [matchPopup, matchPopupQueue, prefersReducedMotion]);
+  function handleTourCallback({ status }) {
+    if (status === STATUS.FINISHED || status === STATUS.SKIPPED) setTourRun(false);
+  }
+  function replayTour() {
+    setSelected(null);
+    setPage("browse");
+    window.scrollTo({ top: 0, behavior: prefersReducedMotion ? "auto" : "smooth" });
+    window.setTimeout(() => setTourRun(true), prefersReducedMotion ? 0 : 150);
+  }
   useEffect(() => {
     if (notice) {
       const timer = setTimeout(() => setNotice(""), 5000);
@@ -349,6 +455,8 @@ export default function App() {
 
   return <>
     <Landing
+      recentReports={recentReports}
+      prefersReducedMotion={prefersReducedMotion}
       onHome={goHome}
       onContact={() => setModal("contact")}
       onHelp={() => setModal("help")}
@@ -358,6 +466,7 @@ export default function App() {
       onBrowse={() => { setFilters((state) => ({ ...state, type: "lost" })); goHome(); }}
       onSearch={searchReports}
     />
+    <HowItWorks prefersReducedMotion={prefersReducedMotion} />
     <div className="app-shell" id="browse-home">
     <aside className="sidebar">
       <a className="brand" href="#" onClick={(event) => { event.preventDefault(); setPage("browse"); setSelected(null); }}>
@@ -407,13 +516,13 @@ export default function App() {
               {readOnly ? <p>Events are unavailable in read-only mode.</p> : events.length ? events.map((event, index) => <p key={`${event.type}-${index}`}>{event.message}{event.admin_notes && <small>{event.admin_notes}</small>}</p>) : <p>No recent events.</p>}
             </div>}
           </div>
-          {user ? <button className="avatar top-avatar account-button" aria-label="Account" title="Account" onClick={() => { setPage("account"); setSelected(null); }}>{user.name.trim().charAt(0).toUpperCase()}</button> : <button className="avatar top-avatar account-button" aria-label="Sign in" title="Sign in" onClick={() => openLogin("browse")}>G</button>}
+          {user ? <button id="tour-profile" className="avatar top-avatar account-button" aria-label="Account" title="Account" onClick={() => { setPage("account"); setSelected(null); }}>{user.name.trim().charAt(0).toUpperCase()}</button> : <button id="tour-profile" className="avatar top-avatar account-button" aria-label="Sign in" title="Sign in" onClick={() => openLogin("browse")}>G</button>}
         </div>
       </header>
       <div className="content">
         {readOnly && <div className="readonly-banner" role="status">Read-only public demo — reports, claims, and admin actions are disabled.</div>}
         {notice && <div className="notice" role="status">{notice}<button onClick={() => setNotice("")}>×</button></div>}
-        {selected && <Detail item={selected} matches={matches} matchesLoading={matchesLoading} role={role} readOnly={readOnly} token={token} backLabel={detailReturnPage === "my" ? "Back to My activity" : "Back to reports"} onBack={() => setSelected(null)} onClaim={submitClaim} onOpen={(item) => openItem(item, detailReturnPage)} onDelete={deleteReport} />}
+        {selected && <Detail item={selected} matches={matches} matchesLoading={matchesLoading} role={role} readOnly={readOnly} token={token} prefersReducedMotion={prefersReducedMotion} backLabel={detailReturnPage === "my" ? "Back to My activity" : "Back to reports"} onBack={() => setSelected(null)} onClaim={submitClaim} onOpen={(item) => openItem(item, detailReturnPage)} onDelete={deleteReport} />}
         {!selected && page === "browse" && <Browse items={items} filters={filters} setFilters={setFilters} onOpen={openItem} onReport={startReport} readOnly={readOnly} loading={itemsLoading} />}
         {!selected && !readOnly && user && page === "report" && <Report form={form} setForm={setForm} submit={submitReport} busy={busy} onError={setNotice} />}
         {!selected && !readOnly && !user && page === "report" && <div className="activity-page"><h1>Sign in to report an item</h1><p className="page-intro">Sign in or create a student account to submit a report.</p><button className="primary-btn" onClick={() => openLogin("report")}>Login to continue</button></div>}
@@ -448,27 +557,60 @@ export default function App() {
     {modal === "help" && <Modal title="Help Centre" onClose={() => setModal("")}><ContactCard title="Help Centre" help /></Modal>}
     {modal === "guidelines" && <Modal title="Pickup Guidelines" onClose={() => setModal("")}><PickupGuidelines /></Modal>}
     {modal === "login" && <Login onAuthenticate={authenticate} notice={notice} onClose={() => setModal("")} />}
-    <footer className="site-footer"><a href="#top" onClick={(event) => { event.preventDefault(); goHome(); }}><img src="/campfindr-logo.png" alt="CampFindr" /></a><span>Campus Lost &amp; Found</span></footer>
+    <footer className="site-footer"><a href="#top" onClick={(event) => { event.preventDefault(); goHome(); }}><img src="/campfindr-logo.png" alt="CampFindr" /></a><span>Campus Lost &amp; Found</span><button className="replay-tour" onClick={replayTour}>Replay tour</button></footer>
+    <Joyride
+      steps={TOUR_STEPS}
+      run={tourRun}
+      continuous
+      showProgress
+      showSkipButton
+      disableAnimation={Boolean(prefersReducedMotion)}
+      callback={handleTourCallback}
+      styles={{ options: { primaryColor: "#168778", zIndex: 1600 } }}
+    />
+    <MatchPopup
+      match={matchPopup}
+      prefersReducedMotion={prefersReducedMotion}
+      onClose={() => setMatchPopup(null)}
+      onOpen={() => {
+        const item = matchPopup?.item;
+        setMatchPopup(null);
+        setMatchPopupQueue([]);
+        if (item) openItem(item, detailReturnPage);
+      }}
+    />
   </>;
 }
 
-function Landing({ onHome, onContact, onHelp, onGuidelines, onLogin, onReport, onBrowse, onSearch }) {
+function Landing({ recentReports, prefersReducedMotion, onHome, onContact, onHelp, onGuidelines, onLogin, onReport, onBrowse, onSearch }) {
   const [query, setQuery] = useState("");
+  const [playLogoIntro, setPlayLogoIntro] = useState(false);
+  useEffect(() => {
+    if (sessionStorage.getItem("campfindr_logo_intro_seen")) return;
+    sessionStorage.setItem("campfindr_logo_intro_seen", "true");
+    setPlayLogoIntro(true);
+  }, []);
   return <section className="landing-hero" id="top">
     <nav className="landing-nav" aria-label="Main navigation">
-      <a className="findr-brand" href="#top" onClick={(event) => { event.preventDefault(); onHome(); }}><img src="/campfindr-logo.png" alt="CampFindr" /></a>
+      <a className="findr-brand" href="#top" onClick={(event) => { event.preventDefault(); onHome(); }}><img src="/campfindr-logo.png" alt="CampFindr" />
+        {playLogoIntro && !prefersReducedMotion && <>
+          <motion.span className="brand-intro-pin" initial={{ y: -26, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ type: "spring", stiffness: 430, damping: 17 }} aria-hidden="true"><MapPin size={16} fill="currentColor" /></motion.span>
+          <motion.span className="brand-intro-lens" initial={{ scale: 0.8 }} animate={{ scale: [1, 1.38, 1] }} transition={{ delay: 0.55, duration: 0.65, ease: "easeInOut" }} aria-hidden="true"><Search size={16} /></motion.span>
+        </>}
+      </a>
       <div className="landing-links">
         <button onClick={onHome}>Home</button>
         <button onClick={onContact}>Contact</button>
         <button onClick={onHelp}>Help Centre</button>
         <button onClick={onGuidelines}>Pickup Guidelines</button>
       </div>
-      <label className="landing-search"><Search size={15} /><input type="search" placeholder="Search lost items" aria-label="Search lost and found reports" value={query} onChange={(event) => { setQuery(event.target.value); onSearch(event.target.value); }} /><button type="button" aria-label="Search reports" onClick={() => onSearch(query)}><ArrowRight size={14} /></button></label>
+      <label className="landing-search" id="tour-search"><Search size={15} /><input type="search" placeholder="Search lost items" aria-label="Search lost and found reports" value={query} onChange={(event) => { setQuery(event.target.value); onSearch(event.target.value); }} /><button type="button" aria-label="Search reports" onClick={() => onSearch(query)}><ArrowRight size={14} /></button></label>
       <button className="landing-login" onClick={onLogin}>Login</button>
     </nav>
+    <ReportTicker reports={recentReports} prefersReducedMotion={prefersReducedMotion} />
     <div className="landing-content">
       <div className="landing-copy"><div className="landing-kicker">CAMPUS LOST &amp; FOUND</div><h1>Lost Something On Campus? Let&apos;s Help You Find It</h1><p>Search your campus reports, post what you lost or found, and let smart matching help reconnect you with what matters.</p>
-        <div className="landing-actions"><button className="landing-primary" onClick={onReport}>Report an Item <ArrowRight size={15} /></button><button className="landing-secondary" onClick={onBrowse}>Browse Lost Items</button></div>
+        <div className="landing-actions"><button id="tour-report" className="landing-primary" onClick={onReport}>Report an Item <ArrowRight size={15} /></button><button className="landing-secondary" onClick={onBrowse}>Browse Lost Items</button></div>
       </div>
       <div className="landing-art" aria-label="Illustration of students finding lost belongings" role="img">
         <svg viewBox="0 0 460 330" aria-hidden="true">
@@ -484,6 +626,61 @@ function Landing({ onHome, onContact, onHelp, onGuidelines, onLogin, onReport, o
         </svg>
       </div>
     </div>
+  </section>;
+}
+
+function ReportTicker({ reports, prefersReducedMotion }) {
+  const entries = reports.map((item) => ({
+    id: item.id,
+    text: anonymousReportText(item),
+    time: relativeTime(item.created_at),
+  }));
+  const items = entries.length ? [...entries, ...entries] : [{ id: "empty", text: "Loading recent campus reports", time: "" }];
+  return <div className="report-ticker" aria-label="Recent anonymous campus reports">
+    <span className="ticker-label"><i /> LIVE REPORTS</span>
+    <div className="ticker-window">
+      <motion.div
+        className="ticker-track"
+        animate={prefersReducedMotion || !entries.length ? undefined : { x: ["0%", "-50%"] }}
+        transition={{ duration: 36, ease: "linear", repeat: Infinity }}
+      >
+        {items.map((entry, index) => <span className="ticker-entry" key={`${entry.id}-${index}`} aria-hidden={index >= entries.length}>
+          <span>{entry.text}</span>{entry.time && <small>{entry.time}</small>}<i>✦</i>
+        </span>)}
+      </motion.div>
+    </div>
+  </div>;
+}
+
+function HowItWorks({ prefersReducedMotion }) {
+  const steps = [
+    { icon: Plus, title: "Report", description: "Share what you lost or found." },
+    { icon: Search, title: "Match", description: "Smart suggestions compare report details." },
+    { icon: Check, title: "Reunite", description: "Verify your item and get it back." },
+  ];
+  return <section className="how-it-works" aria-labelledby="how-it-works-title">
+    <motion.div
+      className="how-inner"
+      initial={prefersReducedMotion ? false : "hidden"}
+      whileInView="visible"
+      viewport={{ once: true, amount: 0.25 }}
+      variants={{ hidden: {}, visible: { transition: { staggerChildren: prefersReducedMotion ? 0 : 0.14 } } }}
+    >
+      <div className="how-heading"><span>THREE SIMPLE STEPS</span><h2 id="how-it-works-title">A little closer to found.</h2></div>
+      <div className="how-steps">{steps.map(({ icon: Icon, title, description }, index) =>
+        <motion.article
+          className="how-step"
+          key={title}
+          variants={{
+            hidden: { opacity: 0, y: prefersReducedMotion ? 0 : 18 },
+            visible: { opacity: 1, y: 0, transition: { duration: prefersReducedMotion ? 0 : 0.45 } },
+          }}
+        >
+          <span className="how-step-number">0{index + 1}</span><span className="how-step-icon"><Icon size={19} /></span>
+          <div><h3>{title}</h3><p>{description}</p></div>
+        </motion.article>
+      )}</div>
+    </motion.div>
   </section>;
 }
 
@@ -553,7 +750,7 @@ function Browse({ items, filters, setFilters, onOpen, onReport, readOnly, loadin
   return <>
     <div className="welcome-row"><div><div className="eyebrow">{readOnly ? "PUBLIC CAMPUS DEMO" : "YOUR CAMPUS, CONNECTED"}</div><h1>Find what’s <span>missing.</span></h1><p>{readOnly ? "Browse sample reports and possible matches. This shared demo is read-only." : "Lost something? Found something? Let’s get it back where it belongs."}</p></div>
       {!readOnly && <button className="primary-btn" onClick={onReport}><Plus size={17} /> Report an item</button>}</div>
-    <div className="hero-strip"><div className="hero-mark"><Sparkles size={20} /></div><div><b>Good things find their way back.</b><span>Browse reports and let smart matching help reunite you with your item.</span></div><div className="hero-count"><strong>{items.length}</strong><span>OPEN REPORTS</span></div></div>
+    <div className="hero-strip" id="tour-matches"><div className="hero-mark"><Sparkles size={20} /></div><div><b>Good things find their way back.</b><span>Browse reports and let smart matching help reunite you with your item.</span></div><div className="hero-count"><strong>{items.length}</strong><span>OPEN REPORTS</span></div></div>
     <div className="section-head" id="report-list"><div><h2>Recent reports</h2><p>Browse items reported around campus</p></div><div className="view-tabs"><span className="selected">All reports</span></div></div>
     <div className="filters">
       <label className="searchbox"><Search size={17} /><input placeholder="Search reports..." value={filters.q} onChange={(e) => update("q", e.target.value)} /></label>
@@ -618,18 +815,86 @@ function ItemCard({ item, onClick }) {
   </button>;
 }
 
-function Detail({ item, matches, matchesLoading, role, readOnly, token, backLabel, onBack, onClaim, onOpen, onDelete }) {
+function Detail({ item, matches, matchesLoading, role, readOnly, token, prefersReducedMotion, backLabel, onBack, onClaim, onOpen, onDelete }) {
   return <div className="detail-page"><button className="back-btn" onClick={onBack}><ArrowLeft size={16} /> {backLabel}</button>
     <div className="detail-layout"><section className="detail-main">
       <div className={`detail-art ${item.type}`}><ItemImage item={item} className="detail-report-image" token={token} /><span className={`type-pill ${item.type}`}>{item.type.toUpperCase()}</span></div>
-      <div className="detail-summary"><span className="category-chip">{item.category}</span><h1>{item.title}</h1><p>{item.description}</p><div className="detail-facts"><span><Compass size={16} /> {item.location}</span><span>Reported {item.date_event}</span><span className="status-text">{item.status}</span></div></div>
+      <div className="detail-summary"><span className="category-chip">{item.category}</span><h1>{item.title}</h1><p>{item.description}</p><div className="detail-facts"><span><Compass size={16} /> {item.location}</span><span>Reported {item.date_event}</span><span className="status-text">{item.status}</span></div><ItemTimeline item={item} matches={matches} prefersReducedMotion={prefersReducedMotion} /></div>
       {!readOnly && item.is_owner && item.status === "open" && <button className="reject-btn detail-delete" onClick={() => onDelete(item.id)}>Delete report</button>}
       {!readOnly && role === "student" && !item.is_owner && item.type === "found" && item.status === "open" && <form className="claim-panel" onSubmit={onClaim}><h3>Is this yours?</h3><p>Share a detail only the owner would know. Your proof is visible only to campus administrators.</p><textarea name="proof" required minLength="8" placeholder="Describe an identifying mark, contents, or other proof of ownership..." /><button className="primary-btn" type="submit">Submit claim <ArrowRight size={16} /></button></form>}
     </section><aside className="match-sidebar"><div className="match-heading"><span className="match-icon"><Sparkles size={17} /></span><div><h2>Possible matches</h2><p>Smart suggestions for this report</p></div></div>
-      {matchesLoading ? <div className="match-empty">Loading item details and match suggestions...</div> : matches.length ? matches.map((match) => <button className="match-card" key={match.item.id} onClick={() => onOpen(match.item)}><div className={`match-score ${match.score >= 70 ? "high" : "medium"}`}>{match.score}<small>%</small></div><div className="match-content"><b>{match.item.title}</b><span>{match.item.location} · {match.item.date_event}</span><p>{match.explanation}</p></div></button>) : <div className="match-empty">No likely matches yet. We’ll keep looking as new reports come in.</div>}
+      {matchesLoading ? <div className="match-empty">Loading item details and match suggestions...</div> : matches.length ? matches.map((match) => <button className="match-card" key={match.item.id} onClick={() => onOpen(match.item)} aria-label={`Open possible match: ${match.item.title}, ${match.score}% match`}><div className="match-thumbnail"><ItemImage item={match.item} token={token} /></div><div className="match-content"><b>{match.item.title}</b><span>{match.item.location} · {match.item.date_event}</span><p>{match.explanation}</p></div><MatchScore score={match.score} /></button>) : <div className="match-empty">No likely matches yet. We’ll keep looking as new reports come in.</div>}
       <div className="privacy-note"><ShieldCheck size={16} /><span>Contact details are private and never shown on public reports.</span></div>
     </aside></div>
   </div>;
+}
+
+function MatchScore({ score }) {
+  return <span className={`match-score ${score >= 70 ? "high" : "medium"}`} style={{ "--match-progress": `${score}%` }} role="img" aria-label={`${score}% match`}><span className="match-score-inner">{score}<small>%</small></span></span>;
+}
+
+function ItemTimeline({ item, matches, prefersReducedMotion }) {
+  const returned = ["returned", "recovered"].includes(item.status) || Boolean(item.returned_at);
+  const claimed = returned || item.status === "claimed";
+  const matched = claimed || item.status === "matched" || matches.length > 0;
+  const currentStep = returned ? 3 : claimed ? 2 : matched ? 1 : 0;
+  const steps = ["Reported", "Matched", "Claimed", "Returned"];
+  return <section className="item-timeline" aria-label="Item status timeline">
+    <h2>Item timeline</h2>
+    <div className="timeline-steps">
+      <motion.span
+        className="timeline-progress"
+        initial={prefersReducedMotion ? false : { width: 0 }}
+        whileInView={{ width: `${(currentStep / (steps.length - 1)) * 100}%` }}
+        viewport={{ once: true }}
+        transition={{ duration: prefersReducedMotion ? 0 : 0.65, ease: "easeOut" }}
+      />
+      {steps.map((step, index) => {
+        const complete = index <= currentStep;
+        return <div className={`timeline-step ${complete ? "complete" : ""} ${index === currentStep ? "current" : ""}`} key={step}>
+          <motion.span
+            className="timeline-dot"
+            initial={prefersReducedMotion ? false : { scale: 0.5, opacity: 0.5 }}
+            whileInView={{ scale: 1, opacity: 1 }}
+            viewport={{ once: true }}
+            transition={{ duration: prefersReducedMotion ? 0 : 0.28, delay: prefersReducedMotion ? 0 : index * 0.12 }}
+          />
+          <span className="timeline-label">{step}</span>
+        </div>;
+      })}
+    </div>
+  </section>;
+}
+
+function MatchPopup({ match, prefersReducedMotion, onClose, onOpen }) {
+  return <AnimatePresence>
+    {match && <motion.div
+      className="match-popup-backdrop"
+      initial={prefersReducedMotion ? false : { opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      onClick={onClose}
+    >
+      <motion.section
+        className="match-popup"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="match-popup-title"
+        initial={prefersReducedMotion ? false : { opacity: 0, y: 18, scale: 0.96 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 10, scale: 0.98 }}
+        transition={{ duration: prefersReducedMotion ? 0 : 0.24 }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button className="match-popup-close" onClick={onClose} aria-label="Close match suggestion">×</button>
+        <span className="match-popup-sparkle"><Sparkles size={20} /></span>
+        <h2 id="match-popup-title">We think we found it!</h2>
+        <p>This report looks like a strong match for <b>{match.item.title}</b>.</p>
+        <MatchScore score={match.score} />
+        <button className="primary-btn" onClick={onOpen}>View possible match <ArrowRight size={16} /></button>
+      </motion.section>
+    </motion.div>}
+  </AnimatePresence>;
 }
 
 function Report({ form, setForm, submit, busy, onError }) {

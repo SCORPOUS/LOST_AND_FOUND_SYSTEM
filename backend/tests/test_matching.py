@@ -10,6 +10,14 @@ def item(kind, **values):
     }
 
 
+def unrelated_text_pair(**found_values):
+    lost = item("lost", title="red notebook", description="spiral pages")
+    found = item(
+        "found", title="black umbrella", description="curved handle", **found_values
+    )
+    return score_pair(lost, found)
+
+
 def test_obvious_pair_uses_weighted_components():
     result = score_pair(item("lost"), item("found", date_event="2026-10-11"))
     assert result is not None
@@ -21,22 +29,22 @@ def test_obvious_pair_uses_weighted_components():
 
 
 def test_category_mismatch_loses_only_category_points():
-    score, _ = score_pair(item("lost"), item("found", category="Keys"))
+    score, _ = unrelated_text_pair(category="Keys")
     assert score == 70
 
 
 def test_date_points_decrease_over_seven_days_in_either_direction():
-    score, explanation = score_pair(item("lost"), item("found", date_event="2026-10-01"))
+    score, explanation = unrelated_text_pair(date_event="2026-10-01")
     assert score == 80
     assert "9 day(s) apart" in explanation
-    score, _ = score_pair(item("lost"), item("found", date_event="2026-10-17"))
+    score, _ = unrelated_text_pair(date_event="2026-10-17")
     assert score == 80
 
 
 def test_date_proximity_is_full_same_day_and_zero_after_seven_days():
-    same_day, _ = score_pair(item("lost"), item("found"))
-    seven_days, _ = score_pair(item("lost"), item("found", date_event="2026-10-17"))
-    eight_days, _ = score_pair(item("lost"), item("found", date_event="2026-10-18"))
+    same_day, _ = unrelated_text_pair()
+    seven_days, _ = unrelated_text_pair(date_event="2026-10-17")
+    eight_days, _ = unrelated_text_pair(date_event="2026-10-18")
     assert same_day == 100
     assert seven_days == 80
     assert eight_days == 80

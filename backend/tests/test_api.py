@@ -62,6 +62,54 @@ def headers_for(tokens, email):
     return tokens(email)
 
 
+def test_report_matches_only_open_opposite_reports_and_limits_results(client, tokens):
+    lost = client.post(
+        "/items", json=report("lost", "Blue Hydro Flask", "2026-10-10"),
+        headers=headers(tokens),
+    ).json()["item"]
+    found_ids = []
+    for day in range(7):
+        response = client.post(
+            "/items",
+            json=report("found", f"Found bottle {day}", f"2026-10-{10 + day}"),
+            headers=headers(tokens, "sam@campus.edu"),
+        )
+        found_ids.append(response.json()["item"]["id"])
+
+    returned_id = found_ids[-1]
+    with main.db() as connection:
+        connection.execute(
+            "UPDATE items SET status = 'returned', returned_at = ? WHERE id = ?",
+            ("2026-10-20T00:00:00+00:00", returned_id),
+        )
+    low_score = client.post(
+        "/items",
+        json={
+            **report("found", "Umbrella", "2026-10-30"),
+            "category": "Other", "color": "Orange", "location": "West Gym",
+        },
+        headers=headers(tokens, "sam@campus.edu"),
+    ).json()["item"]["id"]
+    opposite_type = client.post(
+        "/items", json=report("lost", "Another lost bottle", "2026-10-10"),
+        headers=headers(tokens),
+    ).json()["item"]["id"]
+
+    response = client.get(f"/reports/{lost['id']}/matches")
+
+    assert response.status_code == 200
+    matches = response.json()
+    assert len(matches) == 5
+    assert all(match["score"] >= 40 for match in matches)
+    assert [match["score"] for match in matches] == sorted(
+        (match["score"] for match in matches), reverse=True
+    )
+    result_ids = {match["item"]["id"] for match in matches}
+    assert returned_id not in result_ids
+    assert low_score not in result_ids
+    assert opposite_type not in result_ids
+
+
 def test_report_match_claim_review_and_return_flow(client, tokens):
     lost = client.post("/items", json=report("lost", "Blue Hydro Flask", "2026-10-10"), headers=headers(tokens))
     assert lost.status_code == 201

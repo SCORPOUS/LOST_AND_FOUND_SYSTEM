@@ -1,6 +1,7 @@
 from datetime import date
 from difflib import SequenceMatcher
 
+
 def _similarity(left: str, right: str) -> float:
     left = " ".join((left or "").casefold().split())
     right = " ".join((right or "").casefold().split())
