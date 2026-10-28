@@ -1,3 +1,6 @@
+import sqlite3
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -7,6 +10,7 @@ import main
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "DATABASE_PATH", str(tmp_path / "test.db"))
+    monkeypatch.setattr(main, "UPLOAD_DIR", tmp_path / "uploads")
     main.initialize_db()
     with TestClient(main.app) as test_client:
         for name, email, password, role in [
@@ -48,6 +52,16 @@ def report(kind, title, date_event):
     }
 
 
+def upload_image(client, tokens, body, content_type="image/png", email="maya@campus.edu", preview=False):
+    headers = {**headers_for(tokens, email), "Content-Type": content_type}
+    path = "/uploads?preview=true" if preview else "/uploads"
+    return client.post(path, content=body, headers=headers)
+
+
+def headers_for(tokens, email):
+    return tokens(email)
+
+
 def test_report_match_claim_review_and_return_flow(client, tokens):
     lost = client.post("/items", json=report("lost", "Blue Hydro Flask", "2026-10-10"), headers=headers(tokens))
     assert lost.status_code == 201
@@ -60,7 +74,7 @@ def test_report_match_claim_review_and_return_flow(client, tokens):
     )
     assert found.status_code == 201
     assert found.json()["matches"][0]["score"] >= 80
-    assert "same category" in found.json()["matches"][0]["explanation"]
+    assert "category 100%" in found.json()["matches"][0]["explanation"]
 
     found_id = found.json()["item"]["id"]
     assert client.get(f"/admin/items/{found_id}", headers=headers(tokens)).status_code == 403
@@ -101,6 +115,186 @@ def test_report_match_claim_review_and_return_flow(client, tokens):
     )
     assert returned.status_code == 200
     assert returned.json()["status"] == "returned"
+    assert returned.json()["returned_at"]
+    leaderboard = client.get("/leaderboard").json()
+    assert {"name": "Sam", "returns": 1, "badge": "Helper"} in leaderboard
+    sam_account = client.get("/account", headers=headers(tokens, "sam@campus.edu")).json()
+    assert sam_account["returns"] == 1
+    assert sam_account["badge"] == "Helper"
+
+
+def test_report_image_upload_privacy_and_public_blurred_preview(client, tokens):
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
+    upload = upload_image(client, tokens, png)
+    preview_upload = upload_image(client, tokens, png, preview=True)
+    assert upload.status_code == 201
+    assert preview_upload.status_code == 201
+
+    payload = report("found", "Campus ID card", "2026-10-10")
+    payload.update({
+        "category": "ID cards",
+        "image_url": upload.json()["image_url"],
+        "image_preview_url": preview_upload.json()["image_url"],
+    })
+    created = client.post("/items", json=payload, headers=headers(tokens))
+    assert created.status_code == 201
+    item_id = created.json()["item"]["id"]
+    public_list_item = client.get("/items").json()[0]
+    assert public_list_item["image_url"] == preview_upload.json()["image_url"]
+
+    public_detail = client.get(f"/items/{item_id}").json()
+    assert public_detail["image_url"] == preview_upload.json()["image_url"]
+    assert public_detail["can_view_sensitive_image"] is False
+    assert "image_path" not in public_detail
+    assert "image_preview_url" not in public_detail
+    assert upload.json()["image_url"] not in str(public_detail)
+    assert client.get(upload.json()["image_url"]).status_code == 403
+    assert client.get(preview_upload.json()["image_url"]).status_code == 200
+
+    owner_detail = client.get(f"/items/{item_id}", headers=headers(tokens)).json()
+    assert owner_detail["image_url"] == upload.json()["image_url"]
+    assert owner_detail["can_view_sensitive_image"] is True
+    assert client.get(upload.json()["image_url"], headers=headers(tokens)).status_code == 200
+    assert client.get(
+        upload.json()["image_url"], headers=headers(tokens, "admin@campus.edu")
+    ).status_code == 200
+    assert client.get(upload.json()["image_url"], headers=headers(tokens, "sam@campus.edu")).status_code == 403
+
+
+def test_image_upload_validates_type_size_auth_and_report_ownership(client, tokens):
+    assert client.post("/uploads", content=b"image", headers={"Content-Type": "image/gif"}).status_code == 401
+    assert upload_image(client, tokens, b"image", content_type="image/gif").status_code == 415
+    assert upload_image(client, tokens, b"not an image").status_code == 400
+    assert upload_image(client, tokens, b"x" * (5 * 1024 * 1024 + 1)).status_code == 413
+    foreign_upload = upload_image(
+        client, tokens, b"\x89PNG\r\n\x1a\n" + b"\x00" * 24, email="sam@campus.edu"
+    )
+    payload = report("found", "Blue bottle", "2026-10-10")
+    payload["image_url"] = foreign_upload.json()["image_url"]
+    assert client.post("/items", json=payload, headers=headers(tokens)).status_code == 403
+
+
+def test_image_upload_accepts_supported_formats(client, tokens):
+    samples = [
+        ("image/jpeg", b"\xff\xd8\xff" + b"\x00" * 24),
+        ("image/png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 24),
+        ("image/webp", b"RIFF" + b"\x00" * 4 + b"WEBP" + b"\x00" * 16),
+    ]
+    for content_type, image_data in samples:
+        response = upload_image(client, tokens, image_data, content_type=content_type)
+        assert response.status_code == 201
+        assert response.json()["image_url"].endswith(
+            {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}[content_type]
+        )
+
+
+def test_report_matches_only_return_unresolved_opposites_and_top_five(client, tokens):
+    lost = client.post(
+        "/items", json=report("lost", "Blue bottle", "2026-10-10"), headers=headers(tokens)
+    ).json()["item"]
+    found_items = []
+    for index in range(6):
+        found = report("found", f"Blue bottle {index}", "2026-10-10")
+        found_items.append(client.post(
+            "/items", json=found, headers=headers(tokens, "sam@campus.edu")
+        ).json()["item"])
+
+    matches = client.get(f"/reports/{lost['id']}/matches")
+    assert matches.status_code == 200
+    assert len(matches.json()) == 5
+    assert all(match["score"] == 100 for match in matches.json())
+    with main.db() as connection:
+        connection.execute(
+            "UPDATE items SET status = 'returned', returned_at = ? WHERE id = ?",
+            ("2026-10-12T00:00:00+00:00", found_items[0]["id"]),
+        )
+    still_open = client.get(f"/reports/{lost['id']}/matches").json()
+    assert all(match["item"]["id"] != found_items[0]["id"] for match in still_open)
+    assert client.get(f"/reports/{found_items[0]['id']}/matches").json() == []
+    assert client.get("/items/999999/matches").status_code == 404
+
+
+def test_admin_recovery_stats_export_and_access_control(client, tokens):
+    lost = client.post(
+        "/items", json=report("lost", "Lost blue bottle", "2026-10-10"), headers=headers(tokens)
+    )
+    assert lost.status_code == 201
+    found = client.post(
+        "/items", json=report("found", "Found blue bottle", "2026-10-10"),
+        headers=headers(tokens, "sam@campus.edu"),
+    ).json()["item"]
+    admin_headers = headers(tokens, "admin@campus.edu")
+    assert client.get("/admin/stats", headers=headers(tokens)).status_code == 403
+    assert client.get("/admin/export.csv", headers=headers(tokens)).status_code == 403
+    claim = client.post(
+        "/claims", json={"item_id": found["id"], "proof_description": "Distinctive scratch mark"},
+        headers=headers(tokens),
+    ).json()
+    client.patch(
+        f"/claims/{claim['id']}", json={"status": "approved"}, headers=admin_headers
+    )
+    with main.db() as connection:
+        connection.execute(
+            "UPDATE items SET created_at = ? WHERE id = ?",
+            ((datetime.now(timezone.utc) - timedelta(days=2)).isoformat(), found["id"]),
+        )
+    client.patch(f"/items/{found['id']}/return", headers=admin_headers)
+
+    stats = client.get("/admin/stats", headers=admin_headers)
+    assert stats.status_code == 200
+    assert stats.json()["total_reports"] == 2
+    assert stats.json()["returned_count"] == 1
+    assert stats.json()["unclaimed_count"] == 1
+    assert stats.json()["returned_rate"] == 50
+    assert stats.json()["unclaimed_rate"] == 50
+    assert stats.json()["average_recovery_hours"] > 0
+    exported = client.get("/admin/export.csv", headers=admin_headers)
+    assert exported.status_code == 200
+    assert "text/csv" in exported.headers["content-type"]
+    assert "returned_at" in exported.text.splitlines()[0]
+    assert "sam@campus.edu" in exported.text
+
+
+def test_badge_thresholds_and_safe_returned_at_migration(tmp_path, monkeypatch):
+    assert main.badge_for_returns(0) is None
+    assert main.badge_for_returns(1) == "Helper"
+    assert main.badge_for_returns(4) == "Helper"
+    assert main.badge_for_returns(5) == "Good Samaritan"
+    assert main.badge_for_returns(10) == "Campus Hero"
+
+    database_path = tmp_path / "existing.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """CREATE TABLE items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, title TEXT NOT NULL,
+                description TEXT NOT NULL, category TEXT NOT NULL, color TEXT NOT NULL,
+                brand TEXT NOT NULL DEFAULT '', location TEXT NOT NULL, date_event TEXT NOT NULL,
+                contact_email TEXT NOT NULL, image_path TEXT, status TEXT NOT NULL DEFAULT 'open',
+                created_by TEXT NOT NULL, created_at TEXT NOT NULL
+            )"""
+        )
+        connection.execute(
+            """INSERT INTO items
+               (type, title, description, category, color, location, date_event,
+               contact_email, image_path, created_by, created_at, status)
+               VALUES ('found', 'Found keys', 'Silver keychain', 'Keys', 'Silver',
+                      'Library', '2026-10-01', 'sam@campus.edu', '/legacy/keys.jpg', 'sam@campus.edu',
+                       '2026-10-01T00:00:00+00:00', 'returned')"""
+        )
+
+    monkeypatch.setattr(main, "DATABASE_PATH", str(database_path))
+    main.initialize_db()
+    with main.db() as connection:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(items)")}
+        preserved = connection.execute(
+            "SELECT title, status, image_url FROM items WHERE id = 1"
+        ).fetchone()
+        credit = connection.execute(
+            "SELECT finder_email FROM return_credits WHERE item_id = 1"
+        ).fetchone()
+    assert "returned_at" in columns
+    assert tuple(preserved) == ("Found keys", "returned", "/legacy/keys.jpg")
+    assert credit["finder_email"] == "sam@campus.edu"
 
 
 def test_listing_filters_and_claim_conflicts(client, tokens):
@@ -111,6 +305,8 @@ def test_listing_filters_and_claim_conflicts(client, tokens):
     assert item.status_code == 201
     found_id = item.json()["item"]["id"]
     assert len(client.get("/items?type=found&category=Water%20bottle").json()) == 1
+    assert len(client.get("/items?q=Science%20Hall").json()) == 1
+    assert len(client.get("/items?q=Blue").json()) == 1
     assert client.post(
         "/claims", json={"item_id": found_id, "proof_description": "Distinctive scratch mark"},
         headers=headers(tokens),
@@ -153,6 +349,11 @@ def test_auth_register_login_and_wrong_password(client):
     )
     assert registered.status_code == 201
     assert registered.json()["user"]["role"] == "student"
+    registered_account = client.get(
+        "/account", headers={"Authorization": f"Bearer {registered.json()['token']}"}
+    ).json()
+    assert registered_account["total_logins"] == 1
+    assert registered_account["last_login_at"]
     assert client.get(
         "/auth/me", headers={"Authorization": f"Bearer {registered.json()['token']}"}
     ).json()["email"] == "new@campus.edu"
@@ -338,3 +539,53 @@ def test_delete_item_forbids_other_student_and_claimed_status(client, tokens):
     assert conflict.status_code == 409
     missing = client.delete("/items/9999", headers=headers(tokens))
     assert missing.status_code == 404
+
+
+def test_account_analytics_and_admin_dashboard_data(client, tokens):
+    lost = client.post(
+        "/items", json=report("lost", "My blue bottle", "2026-10-10"),
+        headers=headers(tokens, "maya@campus.edu"),
+    ).json()["item"]
+    found = client.post(
+        "/items", json=report("found", "Found blue bottle", "2026-10-11"),
+        headers=headers(tokens, "sam@campus.edu"),
+    ).json()["item"]
+    claim = client.post(
+        "/claims",
+        json={"item_id": found["id"], "proof_description": "A unique mark below the lid"},
+        headers=headers(tokens, "maya@campus.edu"),
+    )
+    assert claim.status_code == 201
+
+    maya_headers = headers(tokens, "maya@campus.edu")
+    account = client.get("/account", headers=maya_headers)
+    assert account.status_code == 200
+    assert account.json()["email"] == "maya@campus.edu"
+    assert account.json()["total_logins"] >= 2
+    assert account.json()["last_login_at"]
+
+    analytics = client.get("/dashboard/analytics", headers=maya_headers)
+    assert analytics.status_code == 200
+    assert analytics.json()["lost"] == 1
+    assert analytics.json()["found"] == 1
+    assert analytics.json()["locations"] == [{"location": "Science Hall", "count": 2}]
+    assert analytics.json()["timeline"][0]["count"] == 2
+
+    admin_headers = headers(tokens, "admin@campus.edu")
+    students = client.get("/admin/users", headers=admin_headers)
+    assert students.status_code == 200
+    maya = next(student for student in students.json() if student["email"] == "maya@campus.edu")
+    assert maya["total_logins"] >= 2
+    assert maya["last_login_at"]
+
+    activity = client.get("/admin/activity", headers=admin_headers)
+    assert activity.status_code == 200
+    event_types = {event["event_type"] for event in activity.json()}
+    assert {"report", "claim", "match"}.issubset(event_types)
+    filtered = client.get(
+        "/admin/activity?event_type=match&q=bottle", headers=admin_headers
+    )
+    assert filtered.status_code == 200
+    assert filtered.json()
+    assert all(event["event_type"] == "match" for event in filtered.json())
+    assert client.get("/admin/users", headers=maya_headers).status_code == 403

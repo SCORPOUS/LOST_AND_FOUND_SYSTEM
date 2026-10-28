@@ -1,6 +1,10 @@
-# CampusLoop — Lost & Found Portal
+# CampFindr — Lost & Found Portal
 
 A local-first campus lost-and-found prototype. Students can report lost and found items, browse and search listings, inspect possible matches, and submit private claims. Admins can approve/reject claims and mark approved items returned.
+
+Reports accept optional JPG, PNG, and WebP photos up to 5 MB. Images are resized in the browser and saved under `backend/uploads`; ID card reports use a separately blurred public preview, while only the report owner and campus admins can request the original.
+
+The app opens with a full-screen CampFindr landing section. Contact, Help Centre, and Pickup Guidelines open in modals; scroll below the hero to browse reports and use the existing student/admin workspace.
 
 ## Run locally (Windows)
 
@@ -55,7 +59,7 @@ The Docker image builds the frontend into `frontend/dist` and serves it from Fas
    ```powershell
    git init
    git add .
-   git commit -m "Prepare CampusLoop public demo"
+   git commit -m "Prepare CampFindr public demo"
    git branch -M main
    git remote add origin https://github.com/<YOUR-USERNAME>/<YOUR-REPOSITORY>.git
    git push -u origin main
@@ -97,6 +101,10 @@ Copy the `https://....trycloudflare.com` URL printed by `cloudflared` and share 
 
 The demo accounts above are created by `backend/seed.py`. Sign in with email and password, or use **Create account** to register a student account. Passwords are stored as salted PBKDF2-HMAC hashes, and API access uses seven-day bearer-token sessions. Registration always creates a student; admin access is restricted to the seeded admin account.
 
+## Dashboards and About
+
+Students can open **Student dashboard** for campus-wide lost/found totals, a reports-over-time chart, and report counts by campus location. Possible lost/found matches score category (30%), color (20%), location (30%), and date proximity (20%, decreasing to zero over seven days); only opposite-type, unreturned reports scoring at least 40% are shown. **Leaderboard** celebrates finders with Helper (1), Good Samaritan (5), and Campus Hero (10) return credits. **Account** and **Profile** show the signed-in user's account, login history, and badge. Admins can use **Admin dashboard** to review student login totals, search/filter the report, claim, and match activity log, inspect recovery statistics, and export reports as CSV. **About** describes the reporting/matching flow and credits the portal author.
+
 To run the backend test suite:
 
 ```powershell
@@ -125,8 +133,12 @@ See [docs/demo_script.md](docs/demo_script.md) for a timed walkthrough, [docs/te
 ## API at a glance
 
 - `POST /auth/register`, `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`
-- `POST /items`, `GET /items`, `GET /items/{id}`, `GET /items/{id}/matches`
-- `GET /my/items`, admin-only `GET /admin/items/{id}` (includes contact details)
+- `GET /account` (signed-in account and login details)
+- `POST /items`, `GET /items`, `GET /items/{id}`, `GET /reports/{id}/matches` (the `/items/{id}/matches` path remains supported)
+- `POST /uploads` (authenticated raw image upload; `?preview=true` stores a blurred ID-card preview)
+- `GET /leaderboard`
+- `GET /my/items`, authenticated `GET /dashboard/analytics`, admin-only `GET /admin/items/{id}` (includes contact details)
+- `GET /admin/users`, `GET /admin/activity`, `GET /admin/stats`, `GET /admin/export.csv` (admin dashboard data and report export)
 - `GET /my/events`, `PATCH /my/items/{id}/recover`, `DELETE /my/items/{id}`
 - `POST /claims`, `GET /claims`, `PATCH /claims/{id}`, `PATCH /claims/{id}/collect`
 - `PATCH /items/{id}/return` (admin), `GET /stats`
