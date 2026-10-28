@@ -17,6 +17,14 @@ On first run the script creates a backend virtual environment, installs the depe
 - App: http://localhost:5173
 - API docs: http://localhost:8000/docs
 
+If those ports are already in use, choose available ports, for example:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run.ps1 -BackendPort 8001 -FrontendPort 5174
+```
+
+The script configures the frontend proxy to use the selected backend port.
+
 ### Share on the same Wi-Fi
 
 To let friends on the same trusted Wi-Fi/LAN open the prototype, run:
