@@ -1,4 +1,4 @@
-from main import db, initialize_db
+from main import db, hash_password, initialize_db
 from datetime import datetime, timezone
 import sys
 
@@ -24,10 +24,24 @@ SEED_ITEMS = [
     ("found", "Black wallet", "Black leather wallet found outside the auditorium", "Other", "Black", "", "Auditorium", "2026-10-18", "leo@campus.edu"),
 ]
 
+DEMO_ACCOUNTS = [
+    ("Campus Admin", "admin@campus.edu", "CampusAdmin123!", "admin"),
+    ("Maya Chen", "maya@campus.edu", "Student123!", "student"),
+    ("Sam Rivera", "sam@campus.edu", "Student123!", "student"),
+    ("Alex Morgan", "alex@campus.edu", "Student123!", "student"),
+]
+
 
 def seed():
     initialize_db()
     with db() as connection:
+        now = datetime.now(timezone.utc).isoformat()
+        connection.executemany(
+            """INSERT OR IGNORE INTO users(name, email, password_hash, role, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            [(name, email, hash_password(password), role, now)
+             for name, email, password, role in DEMO_ACCOUNTS],
+        )
         existing = connection.execute("SELECT COUNT(*) FROM items").fetchone()[0]
         if existing and "--reset" not in sys.argv:
             print(f"Database already contains {existing} reports; leaving existing data unchanged.")
@@ -35,7 +49,6 @@ def seed():
         connection.execute("DELETE FROM matches")
         connection.execute("DELETE FROM claims")
         connection.execute("DELETE FROM items")
-        now = datetime.now(timezone.utc).isoformat()
         connection.executemany(
             """INSERT INTO items(type,title,description,category,color,brand,location,date_event,
             contact_email,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",

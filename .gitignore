@@ -7,3 +7,6 @@ frontend/dist/
 .pytest_cache/
 **/.pytest_cache/
 *.pyc
+*.db
+.venv/
+node_modules/
